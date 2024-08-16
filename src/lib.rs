@@ -1,9 +1,27 @@
-use std::mem::MaybeUninit;
-use std::ops::{Index, IndexMut};
+#![cfg_attr(not(test), no_std)]
+
+use core::mem::MaybeUninit;
+use core::ops::{Index, IndexMut};
 
 /// A circular buffer implementation with a fixed capacity.
 ///
-/// This structure provides O(1) enqueue and dequeue operations.
+/// This structure provides O(1) enqueue and dequeue operations, making it
+/// efficient for scenarios where a fixed-size buffer with fast insertion
+/// and removal at both ends is needed.
+///
+/// The capacity of the buffer is fixed, a power of 2 allow for optimal performance.
+///
+/// # Examples
+///
+/// ```
+/// use circular_buffer::CircularBuffer;
+///
+/// let mut buffer = CircularBuffer::<i32, 3>::new();
+/// buffer.enqueue(1);
+/// buffer.enqueue(2);
+/// assert_eq!(buffer.len(), 2);
+/// assert_eq!(buffer.dequeue(), Some(1));
+/// ```
 #[derive(Debug)]
 pub struct CircularBuffer<T, const N: usize> {
     buffer: [MaybeUninit<T>; N],
@@ -15,13 +33,38 @@ impl<T, const N: usize> CircularBuffer<T, N> {
     const BIT_COUNT: usize = Self::count_bits(N);
     const BIT_MASK: usize = if N == 0 { 0 } else { N - 1 };
 
+    // Private helper methods
+
+    /// Counts the number of set bits in a usize value.
+    const fn count_bits(mut v: usize) -> usize {
+        let mut c = 0;
+        while v != 0 {
+            v &= v - 1;
+            c += 1;
+        }
+        c
+    }
+
+    /// Calculates the actual index in the buffer array for a given logical index.
+    fn get_index(&self, idx: usize) -> usize {
+        if Self::BIT_COUNT == 0 || Self::BIT_COUNT == 1 {
+            (self.head + idx) & Self::BIT_MASK
+        } else {
+            (self.head + idx) % N
+        }
+    }
+
+    // Public methods
+
     /// Creates a new, empty `CircularBuffer`.
     ///
     /// # Examples
     ///
     /// ```
     /// use circular_buffer::CircularBuffer;
-    /// let buffer: CircularBuffer<i32, 5> = CircularBuffer::new();
+    ///
+    /// let buffer = CircularBuffer::<i32, 8>::new();
+    /// assert!(buffer.is_empty());
     /// ```
     pub const fn new() -> Self {
         Self {
@@ -32,21 +75,64 @@ impl<T, const N: usize> CircularBuffer<T, N> {
     }
 
     /// Returns the capacity of the buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let buffer = CircularBuffer::<i32, 8>::new();
+    /// assert_eq!(buffer.capacity(), 8);
+    /// ```
     pub const fn capacity(&self) -> usize {
         N
     }
 
     /// Returns the number of elements in the buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer = CircularBuffer::<i32, 8>::new();
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// assert_eq!(buffer.len(), 2);
+    /// ```
     pub const fn len(&self) -> usize {
         self.size
     }
 
     /// Returns `true` if the buffer contains no elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer = CircularBuffer::<i32, 8>::new();
+    /// assert!(buffer.is_empty());
+    /// buffer.enqueue(1);
+    /// assert!(!buffer.is_empty());
+    /// ```
     pub const fn is_empty(&self) -> bool {
         self.size == 0
     }
 
     /// Returns `true` if the buffer is at full capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer = CircularBuffer::<i32, 8>::new();
+    /// assert!(!buffer.is_full());
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// assert!(buffer.is_full());
+    /// ```
     pub const fn is_full(&self) -> bool {
         self.size == N
     }
@@ -59,10 +145,11 @@ impl<T, const N: usize> CircularBuffer<T, N> {
     ///
     /// ```
     /// use circular_buffer::CircularBuffer;
+    ///
     /// let mut buffer = CircularBuffer::<i32, 2>::new();
     /// assert_eq!(buffer.enqueue(1), None);
     /// assert_eq!(buffer.enqueue(2), None);
-    /// assert_eq!(buffer.enqueue(3), Some(1));
+    /// assert_eq!(buffer.enqueue(3), Some(1)); // 1 is overwritten and returned
     /// ```
     pub fn enqueue(&mut self, value: T) -> Option<T> {
         if self.is_full() {
@@ -78,6 +165,20 @@ impl<T, const N: usize> CircularBuffer<T, N> {
         }
     }
 
+    /// Adds an element to the back of the buffer if it is not full.
+    ///
+    /// Returns the original value was if the buffer was full.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer = CircularBuffer::<i32, 2>::new();
+    /// assert!(buffer.try_enqueue(1).is_ok());
+    /// assert!(buffer.try_enqueue(2).is_ok());
+    /// assert!(buffer.try_enqueue(3).is_err());
+    /// ```
     pub fn try_enqueue(&mut self, value: T) -> Result<(), T> {
         if self.is_full() {
             Err(value)
@@ -91,12 +192,11 @@ impl<T, const N: usize> CircularBuffer<T, N> {
 
     /// Removes and returns the oldest element from the buffer.
     ///
-    /// Returns `None` if the buffer is empty.
-    ///
     /// # Examples
     ///
     /// ```
     /// use circular_buffer::CircularBuffer;
+    ///
     /// let mut buffer = CircularBuffer::<i32, 2>::new();
     /// buffer.enqueue(1);
     /// buffer.enqueue(2);
@@ -117,7 +217,16 @@ impl<T, const N: usize> CircularBuffer<T, N> {
 
     /// Returns a reference to the first (oldest) element in the buffer.
     ///
-    /// Returns `None` if the buffer is empty.
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer: CircularBuffer<i32, 2> = CircularBuffer::new();
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// assert_eq!(buffer.first(), Some(&1));
+    /// ```
     pub fn first(&self) -> Option<&T> {
         if self.is_empty() {
             None
@@ -128,7 +237,19 @@ impl<T, const N: usize> CircularBuffer<T, N> {
 
     /// Returns a mutable reference to the first (oldest) element in the buffer.
     ///
-    /// Returns `None` if the buffer is empty.
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer: CircularBuffer<i32, 2> = CircularBuffer::new();
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// if let Some(first) = buffer.first_mut() {
+    ///     *first = 3;
+    /// }
+    /// assert_eq!(buffer.first(), Some(&3));
+    /// ```
     pub fn first_mut(&mut self) -> Option<&mut T> {
         if self.is_empty() {
             None
@@ -139,7 +260,16 @@ impl<T, const N: usize> CircularBuffer<T, N> {
 
     /// Returns a reference to the last (newest) element in the buffer.
     ///
-    /// Returns `None` if the buffer is empty.
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer: CircularBuffer<i32, 2> = CircularBuffer::new();
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// assert_eq!(buffer.last(), Some(&2));
+    /// ```
     pub fn last(&self) -> Option<&T> {
         if self.is_empty() {
             None
@@ -151,7 +281,19 @@ impl<T, const N: usize> CircularBuffer<T, N> {
 
     /// Returns a mutable reference to the last (newest) element in the buffer.
     ///
-    /// Returns `None` if the buffer is empty.
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer: CircularBuffer<i32, 2> = CircularBuffer::new();
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// if let Some(last) = buffer.last_mut() {
+    ///     *last = 3;
+    /// }
+    /// assert_eq!(buffer.last(), Some(&3));
+    /// ```
     pub fn last_mut(&mut self) -> Option<&mut T> {
         if self.is_empty() {
             None
@@ -162,27 +304,20 @@ impl<T, const N: usize> CircularBuffer<T, N> {
     }
 
     /// Removes all elements from the buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use circular_buffer::CircularBuffer;
+    ///
+    /// let mut buffer: CircularBuffer<i32, 2> = CircularBuffer::new();
+    /// buffer.enqueue(1);
+    /// buffer.enqueue(2);
+    /// buffer.clear();
+    /// assert!(buffer.is_empty());
+    /// ```
     pub fn clear(&mut self) {
         while let Some(_) = self.dequeue() {}
-    }
-
-    // Private helper methods
-
-    const fn count_bits(mut v: usize) -> usize {
-        let mut c = 0;
-        while v != 0 {
-            v &= v - 1;
-            c += 1;
-        }
-        c
-    }
-
-    fn get_index(&self, idx: usize) -> usize {
-        if Self::BIT_COUNT == 0 || Self::BIT_COUNT == 1 {
-            (self.head + idx) & Self::BIT_MASK
-        } else {
-            (self.head + idx) % N
-        }
     }
 }
 
